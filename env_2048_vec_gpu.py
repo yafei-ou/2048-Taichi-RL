@@ -18,7 +18,10 @@ class VecTaichiGame2048Env(VecEnv):
         self,
         num_envs: int,
         grid_size: int = 4,
-        time_limit: int = 200
+        time_limit: int = 200,
+        no_move_penalty: int = 0,
+        random_initial_block_num: np.ndarray = np.array([2,], dtype=np.float32), # a unformly sampled set of initial block number
+        random_initial_state: np.ndarray = np.array([[1, 2], [0.9, 0.1]], dtype=np.float32) # initial block possible values (power of 2), and the possibility
     ):
         """
         :param num_envs: number of parallel sub-environments
@@ -37,6 +40,12 @@ class VecTaichiGame2048Env(VecEnv):
 
         self.grid_size = grid_size
         self.time_limit = time_limit
+        self.no_move_penalty = no_move_penalty
+        self.random_initial_block_num = ti.field(dtype=ti.f32, shape=random_initial_block_num.shape)
+        self.random_initial_block_num.from_numpy(random_initial_block_num)
+
+        self.random_initial_state = ti.field(dtype=ti.f32, shape=random_initial_state.shape)
+        self.random_initial_state.from_numpy(random_initial_state)
 
         # ==============
         # Taichi Fields
@@ -109,7 +118,7 @@ class VecTaichiGame2048Env(VecEnv):
             if d[e]:
                 # save final observation where user can get it, then reset
                 info[e]["terminal_observation"] = np.copy(obs[e])
-                self._reset_env(e)
+                self._reset_env_kernel(e)
                 for i in range(self.grid_size):
                     for j in range(self.grid_size):
                         obs[e, i, j] = self.grid[e, i, j]
@@ -160,6 +169,30 @@ class VecTaichiGame2048Env(VecEnv):
         self._reset_kernel()
 
     @ti.kernel
+    def _reset_env_kernel(self, e: ti.i32):
+        self.step_counts[e] = 0
+        self.done[e] = 0
+        self.truncated[e] = 0
+        # Clear the grid
+        for i, j in ti.ndrange(self.grid_size, self.grid_size):
+            self.grid[e, i, j] = 0
+
+        # Spawn random
+        chosen_num_blocks_idx = int(ti.random() * self.random_initial_block_num.shape[0])
+        chosen_num_blocks = self.random_initial_block_num[chosen_num_blocks_idx]
+        for i in range(0, chosen_num_blocks):
+            chosen_value = ti.random()
+            c = 0.0
+            value = 0
+            for j in range(0, self.random_initial_state.shape[1]):
+                c += self.random_initial_state[1, j]
+                if c > chosen_value:
+                    value = self.random_initial_state[0, j]
+                    break
+
+            self._spawn_block_in_env(e, value)
+
+    @ti.func
     def _reset_env(self, e: ti.i32):
         self.step_counts[e] = 0
         self.done[e] = 0
@@ -168,24 +201,25 @@ class VecTaichiGame2048Env(VecEnv):
         for i, j in ti.ndrange(self.grid_size, self.grid_size):
             self.grid[e, i, j] = 0
 
-        # Spawn two blocks
-        self._spawn_block_in_env(e)
-        self._spawn_block_in_env(e)
+        # Spawn random
+        chosen_num_blocks_idx = int(ti.random() * self.random_initial_block_num.shape[0])
+        chosen_num_blocks = self.random_initial_block_num[chosen_num_blocks_idx]
+        for i in range(0, chosen_num_blocks):
+            chosen_value = ti.random()
+            c = 0.0
+            value = 0
+            for j in range(0, self.random_initial_state.shape[1]):
+                c += self.random_initial_state[1, j]
+                if c > chosen_value:
+                    value = self.random_initial_state[0, j]
+                    break
+
+            self._spawn_block_in_env(e, value)
 
     @ti.kernel
     def _reset_kernel(self):
         for e in range(self.num_envs):
-            # Mark done = 0
-            self.done[e] = 0
-            self.truncated[e] = 0
-
-            # Clear the grid
-            for i, j in ti.ndrange(self.grid_size, self.grid_size):
-                self.grid[e, i, j] = 0
-
-            # Spawn two blocks
-            self._spawn_block_in_env(e)
-            self._spawn_block_in_env(e)
+            self._reset_env(e)
 
     def _get_observations(self) -> np.ndarray:
         return self.grid.to_numpy()
@@ -228,7 +262,10 @@ class VecTaichiGame2048Env(VecEnv):
                 new_grid_hash = self._grid_hash(e)
                 # If the grid changed, spawn a new block
                 if old_grid_hash != new_grid_hash:
-                    self._spawn_block_in_env(e)
+                    self._spawn_new_block_in_env(e)
+                else:
+                    # Grid hasn't changed, assign negative reward
+                    self.rewards[e] -= self.no_move_penalty
 
         # Step 3: Check "done" after the move
             if self.done[e] == 0:  # only check if not already done
@@ -358,7 +395,41 @@ class VecTaichiGame2048Env(VecEnv):
     #  Spawning
     # -----------
     @ti.func
-    def _spawn_block_in_env(self, e):
+    def _spawn_block_in_env(self, e, value):
+        """
+        Spawn a new block of value in a random empty spot, if available.
+        We'll do a quick approach using a random search (not super efficient).
+        """
+        empty_count = 0
+        for i, j in ti.ndrange(self.grid_size, self.grid_size):
+            if self.grid[e, i, j] == 0:
+                empty_count += 1
+
+        if empty_count != 0:
+            # pick a random empty index in [0..empty_count-1]
+            # We rely on taichi's built-in random for demonstration.
+            # If you want stable reproducibility, you can use self.rng_seeds[e].
+            r = int(ti.random() * empty_count)
+
+            idx = 0
+            chosen_i = 0
+            chosen_j = 0
+            for i, j in ti.ndrange(self.grid_size, self.grid_size):
+                if self.grid[e, i, j] == 0:
+                    if idx == r:
+                        chosen_i = i
+                        chosen_j = j
+                        break
+                    idx += 1
+
+            self.grid[e, chosen_i, chosen_j] = value
+
+
+    # -----------
+    #  Spawning
+    # -----------
+    @ti.func
+    def _spawn_new_block_in_env(self, e):
         """
         Spawn a new block (2 or 4) in a random empty spot, if available.
         We'll do a quick approach using a random search (not super efficient).
@@ -418,11 +489,14 @@ class VecTaichiGame2048Env(VecEnv):
 
 
 if __name__ == "__main__":
+    ti.init()
+
     # Create a vectorized environment with 8 parallel 2048 boards
     vec_env = VecTaichiGame2048Env(num_envs=2, grid_size=4, time_limit=3)
 
     obs = vec_env.reset()
     print("Initial observation shape:", obs.shape)  # (8, 4, 4)
+    print("Obs:", obs)
 
     # Let’s do a random rollout for a few steps
     for step in range(5):

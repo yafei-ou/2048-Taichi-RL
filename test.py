@@ -12,7 +12,7 @@ from env_2048 import Game2048Env
 # Create the environment
 def create_env():
     original_env = Game2048Env()
-    wrapped_env = TimeLimit(original_env, max_episode_steps=500)
+    wrapped_env = TimeLimit(original_env, max_episode_steps=2000)
     return wrapped_env
 
 # Model

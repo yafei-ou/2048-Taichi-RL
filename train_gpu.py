@@ -10,6 +10,7 @@ import os
 from env_2048 import Game2048Env
 from env_2048_vec_gpu import VecTaichiGame2048Env
 import taichi as ti
+import numpy as np
 
 # Initialize Taichi
 # If you have a GPU, you can try ti.gpu
@@ -21,8 +22,8 @@ ti.init(arch=ti.gpu, debug=False)
 config = {
     "total_timesteps": 10_000_000_000,  # Total number of training timesteps
     "learning_rate": 0.0003,  # Learning rate for the optimizer
-    "n_steps": 256,  # Number of steps to run for each environment per update
-    "batch_size": 32768,  # Minibatch size
+    "n_steps": 500,  # Number of steps to run for each environment per update
+    "batch_size": 20480,  # Minibatch size
     "n_epochs": 10,  # Number of epoch when optimizing the surrogate loss
     "gamma": 0.99,  # Discount factor
     "gae_lambda": 0.95,  # GAE lambda
@@ -32,10 +33,14 @@ config = {
     "max_grad_norm": 0.5,  # Maximum norm for gradient clipping
     "verbose": 1,  # Verbosity level
     "save_path": "./ppo_2048_model",  # Path to save the trained model
-    "eval_freq": 100,  # Frequency of evaluations during training
+    "eval_freq": 500,  # Frequency of evaluations during training
     "log_path": "./logs",  # Path for TensorBoard logs
     "device": "cuda"
 }
+
+policy_kwargs = dict(
+    net_arch=[dict(pi=[128, 256, 256, 128], vf=[128, 256, 256, 128])],  # Separate networks for policy (pi) and value function (vf)
+)
 
 # Create directories if they do not exist
 os.makedirs(config["save_path"], exist_ok=True)
@@ -47,11 +52,24 @@ def create_env():
     wrapped_env = TimeLimit(original_env, max_episode_steps=500)
     return wrapped_env
 
+
 # Create the environment
-env = VecTaichiGame2048Env(num_envs=1024, grid_size=4, time_limit=500)  # Wrapping the custom environment in DummyVecEnv
+env = VecTaichiGame2048Env(
+    num_envs=512,
+    grid_size=4,
+    time_limit=500,
+    no_move_penalty=0.2,
+    random_initial_block_num=np.array([2,3,4,5,6,7], dtype=np.float32),
+    random_initial_state=np.array([[1, 2, 3, 4, 5, 6, 7, 8], [0.4, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]], dtype=np.float32)    )  # Wrapping the custom environment in DummyVecEnv
 
 # Callback for evaluation during training
-eval_env = VecTaichiGame2048Env(num_envs=1, grid_size=4, time_limit=500)
+eval_env = VecTaichiGame2048Env(
+    num_envs=5,
+    grid_size=4,
+    time_limit=500,
+    no_move_penalty=0.2,
+    random_initial_block_num=np.array([2,3,4,5,6,7], dtype=np.float32),
+    random_initial_state=np.array([[1, 2, 3, 4, 5, 6, 7, 8], [0.4, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2, 0.2]], dtype=np.float32)  )
 eval_callback = EvalCallback(
     eval_env,
     best_model_save_path=config["save_path"],
@@ -77,7 +95,8 @@ model = PPO(
     max_grad_norm=config["max_grad_norm"],
     verbose=config["verbose"],
     tensorboard_log=config["log_path"],
-    device=config["device"]
+    device=config["device"],
+    policy_kwargs=policy_kwargs
 )
 
 # Train the PPO model
