@@ -12,7 +12,7 @@ from env_2048 import Game2048Env
 # Create the environment
 def create_env():
     original_env = Game2048Env()
-    wrapped_env = TimeLimit(original_env, max_episode_steps=200)
+    wrapped_env = TimeLimit(original_env, max_episode_steps=500)
     return wrapped_env
 
 # Model
@@ -28,3 +28,4 @@ while not terminated and not truncated:
     obs, reward, terminated, truncated, info = env.step(action)
     print(reward)
     env.render()
+print(env.env.score)

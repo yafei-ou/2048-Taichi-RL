@@ -38,12 +38,6 @@ class VecTaichiGame2048Env(VecEnv):
         self.grid_size = grid_size
         self.time_limit = time_limit
 
-        # Initialize Taichi
-        # If you have a GPU, you can try ti.gpu
-        # If you want to fall back on CPU, you can use ti.cpu
-        # or just do: ti.init(arch=ti.gpu, debug=False)
-        ti.init(arch=ti.gpu, debug=False)
-
         # ==============
         # Taichi Fields
         # ==============
@@ -194,42 +188,16 @@ class VecTaichiGame2048Env(VecEnv):
             self._spawn_block_in_env(e)
 
     def _get_observations(self) -> np.ndarray:
-        """
-        Copy the grid from GPU to CPU as a numpy array of shape (num_envs, grid_size, grid_size).
-        """
-        obs = np.zeros((self.num_envs, self.grid_size, self.grid_size), dtype=np.int32)
-        for e in range(self.num_envs):
-            for i in range(self.grid_size):
-                for j in range(self.grid_size):
-                    obs[e, i, j] = self.grid[e, i, j]
-        return obs
+        return self.grid.to_numpy()
 
     def _get_rewards(self) -> np.ndarray:
-        """
-        Copy the rewards from GPU to CPU.
-        """
-        r = np.zeros((self.num_envs,), dtype=np.float32)
-        for e in range(self.num_envs):
-            r[e] = self.rewards[e]
-        return r
+        return self.rewards.to_numpy()
 
     def _get_done(self) -> np.ndarray:
-        """
-        Copy the done array from GPU to CPU (and convert to bool).
-        """
-        d = np.zeros((self.num_envs,), dtype=bool)
-        for e in range(self.num_envs):
-            d[e] = (self.done[e] == 1)
-        return d
-    
-    def _get_truncated(self):
-        """
-        Copy the truncated array from GPU to CPU (and convert to bool).
-        """
-        t = np.zeros((self.num_envs,), dtype=bool)
-        for e in range(self.num_envs):
-            t[e] = (self.truncated[e] == 1)
-        return t
+        return self.done.to_numpy().astype(bool)
+
+    def _get_truncated(self) -> np.ndarray:
+        return self.truncated.to_numpy().astype(bool)
 
     @ti.kernel
     def _step_kernel(self):
@@ -326,7 +294,7 @@ class VecTaichiGame2048Env(VecEnv):
         `reverse=False` for left, True for right.
         """
 
-        row = ti.static(self.grid_size)
+        row = self.grid_size
         # read row
         tmp = ti.Vector([0, 0, 0, 0])
         compressed = ti.Vector([0, 0, 0, 0])
@@ -365,11 +333,7 @@ class VecTaichiGame2048Env(VecEnv):
                 new_val = compressed[i] + 1
                 merged[out_idx] = new_val
 
-                # Reward logic example: add a small positive reward for merges
-                # e.g. 2 -> 4 or 4 -> 8, etc.
-                # You can scale it or shape it how you want
-                # For a tile 'new_val', the actual 2048 tile value is 2^new_val.
-                # We’ll just add something simpler:
+                # Reward logic
                 self.rewards[e] += new_val - 2
 
                 skip = True
@@ -435,20 +399,20 @@ class VecTaichiGame2048Env(VecEnv):
         """
         Return 1 if game is over, else 0
         """
-        done = True
+        done = 1
         # If there's any empty cell => not done
         for i, j in ti.ndrange(self.grid_size, self.grid_size):
             if self.grid[e, i, j] == 0:
-                done = False
+                done = 0
 
         # Check merges
         for i, j in ti.ndrange(self.grid_size, self.grid_size):
             if j < self.grid_size - 1:
                 if self.grid[e, i, j] == self.grid[e, i, j+1]:
-                    done = False
+                    done = 0
             if i < self.grid_size - 1:
                 if self.grid[e, i, j] == self.grid[e, i+1, j]:
-                    done = False
+                    done = 0
 
         return done
 
