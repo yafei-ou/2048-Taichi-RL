@@ -1,3 +1,6 @@
 logs
 ppo_2048_model
 __pycache__
+
+*.zip
+*.npz
